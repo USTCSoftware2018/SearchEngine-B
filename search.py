@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
-from typing import List
+from typing import List, Tuple
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlencode
 
 
 class Result:
@@ -16,11 +19,11 @@ class Source:
 
     The only required method is `search`.
     """
-    def search(self, keyword: str) -> List[Result]:
+    def search(self, keyword: str, offset: int) -> Tuple[int, List[Result]]:
         """
         Search a certain data source for a specific keyword.
 
-        :return: A list of [Result]s.
+        :return: (total number of results, list of [Result]s)
         """
         raise NotImplementedError()
 
@@ -29,7 +32,27 @@ class HumanGeneSource(Source):
     """
     Source: https://ghr.nlm.nih.gov/gene
     """
-    pass
+    def search(self, keyword: str, offset: int = 0):
+        params = {
+            'query': keyword,
+            'start': offset
+        }
+        query_string = urlencode(params)
+        response = requests.get('https://ghr.nlm.nih.gov/search?%s' % query_string)
+        soup = BeautifulSoup(response.content, features='html.parser')
+        ul = soup.find(class_='search-results')
+        if not ul:
+            return []
+        results = []
+        for li in ul.children:
+            result = Result(
+                li.a.text,
+                'https://ghr.nlm.nih.gov{}'.format(li.a['href']),
+                li.find(class_='sample-content').text
+            )
+            results.append(result)
+        total = int(soup.find(class_='ss-item').text[5:-1])
+        return (total, results)
 
 
 class iGEMPartSource(Source):
@@ -89,6 +112,8 @@ if __name__ == '__main__':
     else:
         raise RuntimeError('Unknown data source')
 
-    for result in source.search(keyword):
+    total, results = source.search(keyword)
+    print('total %d results' % total)
+    for result in results:
         print('%s: %s' % (result.title, result.url))
 
