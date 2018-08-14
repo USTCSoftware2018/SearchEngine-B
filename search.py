@@ -66,3 +66,29 @@ class GeneExpressionSource(Source):
     """
     pass
 
+
+if __name__ == '__main__':
+    import sys
+
+    mapping = {
+        'human-gene': HumanGeneSource,
+        'igem-part': iGEMPartSource,
+        'rcsb': RCSBSource,
+        'uniprot': UniProtSource,
+        'taxonomy': TaxonomySource,
+        'gene-expr': GeneExpressionSource
+    }
+
+    source_name = sys.argv[1]
+    keyword = sys.argv[2]
+
+    for (k, v) in mapping.items():
+        if k.startswith(source_name):
+            source = v()
+            break
+    else:
+        raise RuntimeError('Unknown data source')
+
+    for result in source.search(keyword):
+        print('%s: %s' % (result.title, result.url))
+
