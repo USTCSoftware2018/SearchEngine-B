@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from typing import List
+
 
 class Result:
     def __init__(self, title, url, summary):
@@ -18,7 +20,7 @@ class Source:
         """
         Search a certain data source for a specific keyword.
 
-        :return: A generator yielding [Result]s.
+        :return: A list of [Result]s.
         """
         raise NotImplementedError()
 
@@ -63,3 +65,4 @@ class GeneExpressionSource(Source):
     Source: https://www.ncbi.nlm.nih.gov/geo/
     """
     pass
+
