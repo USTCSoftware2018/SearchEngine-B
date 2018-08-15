@@ -100,6 +100,8 @@ class HumanGeneSource(Source):
 class iGEMPartSource(Source):
     """
     Source: http://parts.igem.org/Main_Page
+
+    Biobrick search is done in Biohub.
     """
     pass
 
@@ -149,6 +151,7 @@ class RCSBSource(Source):
             )
             results.append(result)
         return results
+
 
 class UniProtSource(Source):
     """
