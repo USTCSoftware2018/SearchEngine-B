@@ -2,8 +2,9 @@
 
 from typing import List, Dict
 import requests
+import json
 from bs4 import BeautifulSoup
-from urllib.parse import urlencode
+from urllib.parse import urlencode, parse_qs
 
 
 class Result:
@@ -87,7 +88,7 @@ class HumanGeneSource(Source):
 
         while offset < rng.stop:
             oneshot = self.search_oneshot(keyword, offset)
-            results.extend(oneshot)
+            results.extend(oneshot[:min(rng.stop-offset, step)])
             if len(oneshot) < step:
                 break
             offset += len(oneshot)
@@ -106,8 +107,102 @@ class RCSBSource(Source):
     """
     Source: http://www.rcsb.org/
     """
-    pass
+    def __init__(self):
+        self.jsessionid = {}
+        self.qrid = {}
+        self.total = {}
+        self.cached_results = {}
 
+        # keyword is in direct if and only if the keyword redirects
+        # directly to a structure.  This happens when the keyword
+        # itself is a PDB ID.
+        self.direct = set()
+
+    def get_qrid(self, keyword: str) -> str:
+        if keyword in self.qrid:
+            return self.qrid[keyword]
+        query_string = urlencode({'f': '', 'q': keyword})
+        url = 'http://www.rcsb.org/pdb/search/navbarsearch.do?' + query_string
+        response = requests.get(url, allow_redirects=False)
+        redirect_url = response.headers['Location']
+        if redirect_url.startswith('http://www.rcsb.org/pdb/search/structidSearch.do'):
+            self.direct.add(keyword)
+            return None
+        d = parse_qs(response.headers['Location'])
+        tmp = d['jsessionid'][0].split('?')
+        self.jsessionid[keyword] = tmp[0]
+        self.qrid[keyword] = tmp[1].split('=')[1]
+
+        return self.qrid[keyword]
+
+    def count(self, keyword: str) -> int:
+        qrid = self.get_qrid(keyword)
+
+        if keyword in self.direct:
+            return 1
+
+        if keyword in self.total:
+            return self.total[keyword]
+        
+        qs = urlencode({
+            'tabtoshow': 'Current',
+            'qrid': qrid,
+            'startAt': '0',
+            'resultsperpage': '1'
+        })
+        url = 'http://www.rcsb.org/pdb/json/searchresults.do?' + qs
+        response = requests.get(url)
+        d = json.loads(response.content.decode())
+        self.total[keyword] = d['Pageable']['Total Results Count']
+        return self.total[keyword]
+
+    def query_all(self, keyword: str) -> int:
+        if keyword in self.cached_results:
+            return self.cached_results[keyword]
+
+        if keyword in self.direct:
+            url = 'https://www.rcsb.org/structure/' + keyword
+            response = requests.get(url)
+            soup = BeautifulSoup(response.content, features='html.parser')
+            summary = soup.find(id='structureTitle').text
+            self.cached_results[keyword] = [
+                Result(
+                    keyword,
+                    url,
+                    summary
+                )
+            ]
+            return self.cached_results[keyword]
+        
+        total = self.count(keyword)
+        qrid = self.get_qrid(keyword)
+        qs = urlencode({
+            'tabtoshow': 'Current',
+            'qrid': qrid,
+            'startAt': '0',
+            'resultsperpage': str(total)
+        })
+        url = 'http://www.rcsb.org/pdb/json/searchresults.do?' + qs
+        response = requests.get(url)
+        d = json.loads(response.content.decode())
+        if 'Result Set' not in d:
+            return []
+
+        results = []
+        for t in d['Result Set']:
+            result = Result(
+                t['PDB ID'],
+                'http://www.rcsb.org/structure/' + t['PDB ID'],
+                t['Title']
+            )
+            results.append(result)
+
+        self.cached_results[keyword] = results
+        return results
+
+    def search(self, keyword: str, rng: range) -> List[Result]:
+        results = self.query_all(keyword)
+        return results[rng.start : rng.stop]
 
 class UniProtSource(Source):
     """
@@ -156,4 +251,4 @@ if __name__ == '__main__':
     results = source.search(keyword, range(0, total))
     print('total %d results' % total)
     for (i, result) in enumerate(results):
-        print('%d. %s: %s' % (1+i, result.title, result.url))
+        print('%d. %s (%s) %s' % (1+i, result.title, result.url, result.summary))
