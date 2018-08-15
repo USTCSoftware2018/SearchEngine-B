@@ -3,6 +3,7 @@
 from typing import List, Dict
 import requests
 import json
+import csv
 from bs4 import BeautifulSoup
 from urllib.parse import urlencode, parse_qs
 
@@ -108,101 +109,46 @@ class RCSBSource(Source):
     Source: http://www.rcsb.org/
     """
     def __init__(self):
-        self.jsessionid = {}
-        self.qrid = {}
-        self.total = {}
-        self.cached_results = {}
+        self.cached_ids = {}
 
-        # keyword is in direct if and only if the keyword redirects
-        # directly to a structure.  This happens when the keyword
-        # itself is a PDB ID.
-        self.direct = set()
+    def query_all(self, keyword: str) -> List[str]:
+        if keyword in self.cached_ids:
+            return self.cached_ids[keyword]
 
-    def get_qrid(self, keyword: str) -> str:
-        if keyword in self.qrid:
-            return self.qrid[keyword]
-        query_string = urlencode({'f': '', 'q': keyword})
-        url = 'http://www.rcsb.org/pdb/search/navbarsearch.do?' + query_string
-        response = requests.get(url, allow_redirects=False)
-        redirect_url = response.headers['Location']
-        if redirect_url.startswith('http://www.rcsb.org/pdb/search/structidSearch.do'):
-            self.direct.add(keyword)
-            return None
-        d = parse_qs(response.headers['Location'])
-        tmp = d['jsessionid'][0].split('?')
-        self.jsessionid[keyword] = tmp[0]
-        self.qrid[keyword] = tmp[1].split('=')[1]
-
-        return self.qrid[keyword]
+        data = '<orgPdbQuery><queryType>org.pdb.query.simple.AdvancedKeywordQuery</queryType><keywords>%s</keywords></orgPdbQuery>' % (keyword.replace('<', '&lt;').replace('>', '&gt;'))
+        response = requests.post('https://www.rcsb.org/pdb/rest/search?sortfield=rank%20Descending', data=data, headers={'Content-Type': 'application/x-www-form-urlencoded'})
+        pdbids = response.content.decode().split('\n')
+        pdbids = [x for x in pdbids if len(x) > 0]
+        self.cached_ids[keyword] = pdbids
+        return pdbids
 
     def count(self, keyword: str) -> int:
-        qrid = self.get_qrid(keyword)
+        return len(self.query_all(keyword))
 
-        if keyword in self.direct:
-            return 1
+    def search(self, keyword: str, rng: range) -> str:
+        # Query IDs
+        pdbids = self.query_all(keyword)
+        pdbids = pdbids[rng.start : rng.stop]
 
-        if keyword in self.total:
-            return self.total[keyword]
-        
-        qs = urlencode({
-            'tabtoshow': 'Current',
-            'qrid': qrid,
-            'startAt': '0',
-            'resultsperpage': '1'
-        })
-        url = 'http://www.rcsb.org/pdb/json/searchresults.do?' + qs
-        response = requests.get(url)
-        d = json.loads(response.content.decode())
-        self.total[keyword] = d['Pageable']['Total Results Count']
-        return self.total[keyword]
+        # Query titles
+        form = {
+            'pdbids': ','.join(pdbids),
+            'customReportColumns': 'structureId,structureTitle',
+            'format': 'csv'
+        }
+        response = requests.post('http://www.rcsb.org/pdb/rest/customReport.csv', form)
 
-    def query_all(self, keyword: str) -> int:
-        if keyword in self.cached_results:
-            return self.cached_results[keyword]
-
-        if keyword in self.direct:
-            url = 'https://www.rcsb.org/structure/' + keyword
-            response = requests.get(url)
-            soup = BeautifulSoup(response.content, features='html.parser')
-            summary = soup.find(id='structureTitle').text
-            self.cached_results[keyword] = [
-                Result(
-                    keyword,
-                    url,
-                    summary
-                )
-            ]
-            return self.cached_results[keyword]
-        
-        total = self.count(keyword)
-        qrid = self.get_qrid(keyword)
-        qs = urlencode({
-            'tabtoshow': 'Current',
-            'qrid': qrid,
-            'startAt': '0',
-            'resultsperpage': str(total)
-        })
-        url = 'http://www.rcsb.org/pdb/json/searchresults.do?' + qs
-        response = requests.get(url)
-        d = json.loads(response.content.decode())
-        if 'Result Set' not in d:
-            return []
-
+        mappings = response.content.decode().replace('<br />', '\n').split('\n')[1:]  # Remain compatible when upstream fixes this bug
+        c = csv.reader(mappings)
         results = []
-        for t in d['Result Set']:
+        for (pdbid, title) in zip(pdbids, (x[1] for x in c)):
             result = Result(
-                t['PDB ID'],
-                'http://www.rcsb.org/structure/' + t['PDB ID'],
-                t['Title']
+                pdbid,
+                'https://www.rcsb.org/structure/' + pdbid,
+                title
             )
             results.append(result)
-
-        self.cached_results[keyword] = results
         return results
-
-    def search(self, keyword: str, rng: range) -> List[Result]:
-        results = self.query_all(keyword)
-        return results[rng.start : rng.stop]
 
 class UniProtSource(Source):
     """
