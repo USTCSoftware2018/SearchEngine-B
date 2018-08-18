@@ -6,6 +6,7 @@ import json
 import csv
 from bs4 import BeautifulSoup
 from urllib.parse import urlencode, parse_qs
+import re
 
 
 class Result:
@@ -157,21 +158,231 @@ class UniProtSource(Source):
     """
     Source: https://www.uniprot.org/
     """
-    pass
+    def __init__(self):
+        self._cached_first_soup = None
+        
+    def scrapy(self, keyword: str, params : Dict[str, str] = {}) -> BeautifulSoup:
+        query_string = urlencode({'query': keyword, **params})
+        query_url = 'https://www.uniprot.org/uniprot/?%s&sort=score' % query_string
+        response = requests.get(query_url)
+        return BeautifulSoup(response.content, features='html.parser')
+    def search_oneshot(self, keyword: str, start: int) -> List[Result]:
+        if start == 0 and self._cached_first_soup:
+            soup = self._cached_first_soup
+        else:
+            soup = self.scrapy(keyword, {'offset': start})
+        ul = soup.find('tbody')
+        if not ul:
+            return []
+        
+        results = []
+        
+        for li in ul.children:
+            entryID = li.a.text
+            new_url = 'https://www.uniprot.org{}'.format(li.a['href'])
+            protein_name = li.find('div', class_='protein_names').find('div',class_='short').text
+            gene_name = li.find('div', class_='gene-names').text
+            organism = li.find_all('a')[1].text
+            result = Result(
+                entryID,
+                new_url,
+                'Protein name:'+protein_name+' Gene name:'+gene_name+'Organism:'+organism
+                )
+            results.append(result)
+            
+        return results
+    
+    def count(self, keyword: str) -> int:
+        soup = self.scrapy(keyword);
+        self._cached_first_soup = soup;
+        result = int(re.findall("\d+",soup.find('div',class_='main-aside').find('script').text)[0])
+        return result
+        
+    def search(self, keyword: str, rng: range) -> List[Result]:
+        results = []
+        offset = rng.start
+        step = 25
 
+        while offset < rng.stop:
+            oneshot = self.search_oneshot(keyword, offset)
+            results.extend(oneshot[:min(rng.stop-offset, step)])
+            if len(oneshot) < step:
+                break
+            offset += len(oneshot)
+
+        return results
 
 class TaxonomySource(Source):
     """
     Source: https://www.uniprot.org/taxonomy/
     """
-    pass
+    def __init__(self):
+        self._cached_first_soup = None
+        
+    def scrapy(self, keyword: str, params : Dict[str, str] = {}) -> BeautifulSoup:
+        query_string = urlencode({'query': keyword, **params})
+        query_url = 'https://www.uniprot.org/taxonomy/?%s&sort=score' % query_string
+        response = requests.get(query_url)
+        return BeautifulSoup(response.content, features='html.parser')
+    def search_oneshot(self, keyword: str, start: int) -> List[Result]:
+        if start == 0 and self._cached_first_soup:
+            soup = self._cached_first_soup
+        else:
+            soup = self.scrapy(keyword, {'offset': start})
+        ul = soup.find('tbody')
+        if not ul:
+            return []
+        
+        results = []
+        
+        for li in ul.children:
+            entry = li.a.text
+            new_url = 'https://www.uniprot.org{}'.format(li.a['href'])
+            summary = li.find('p', class_='summary').text
+            result = Result(
+                entry,
+                new_url,
+                summary
+                )
+            results.append(result)
+            
+        return results
+    
+    def count(self, keyword: str) -> int:
+        soup = self.scrapy(keyword);
+        self._cached_first_soup = soup;
+        result = int(re.findall("\d+",soup.find('div',class_='main-aside').find('script').text)[0])
+        return result
+        
+    def search(self, keyword: str, rng: range) -> List[Result]:
+        results = []
+        offset = rng.start
+        step = 25
+
+        while offset < rng.stop:
+            oneshot = self.search_oneshot(keyword, offset)
+            results.extend(oneshot[:min(rng.stop-offset, step)])
+            if len(oneshot) < step:
+                break
+            offset += len(oneshot)
+
+        return results
 
 
-class GeneExpressionSource(Source):
+class GeneExpressionSourceProfiles(Source):
     """
-    Source: https://www.ncbi.nlm.nih.gov/geo/
+    Source: https://www.ncbi.nlm.nih.gov/geoprofiles/
     """
-    pass
+    def __init__(self):
+        self._cached_first_soup = None
+        
+    def get_uid(self, keyword: str) -> List[str]:
+        """
+        uid need being sorted 
+        """
+        query_string = urlencode({'term': keyword})
+        query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=geoprofiles&%s' % query_string
+        response = requests.get(query_url)
+        bs = BeautifulSoup(response.content, features='html.parser')
+        count = bs.find('count').text
+        retnum_string = urlencode({'retmax':count})
+        query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=geoprofiles&%s' % (query_string+'&'+retnum_string)
+        response = requests.get(query_url)
+        bs = BeautifulSoup(response.content, features='html.parser')
+        uid_t = bs.find_all('id')
+        if not uid_t:
+            return []
+        uid = []
+        for i in range(len(uid_t)):
+            uid.append(uid_t[i].text)
+        return uid
+        
+    def get_info(self, keyword: str) -> List[Result]:
+        """
+        too slow, need searching multiple information sametime, and we need to set the range
+        """
+        uid = self.get_uid(keyword)
+        if not self.get_uid(keyword):
+            return []
+        results = []  
+        for i in range(len(uid)):
+            query_string = urlencode({'id':uid[i]})
+            url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=geoprofiles&%s' % query_string
+            r = requests.get(url)
+            bs = BeautifulSoup(r.content, features='html.parser')
+            title = bs.title.text
+            new_url = 'https://www.ncbi.nlm.nih.gov/geoprofiles/'+uid[i]
+            summary = bs.nucdesc.text
+            result = Result(
+                title,
+                new_url,
+                summary
+                )
+            results.append(result)
+        return results
+    
+    def count(self, keyword: str) -> int:
+        return len(self.get_uid(keyword))
+        
+    def search(self, keyword: str, rng: range) -> List[Result]:
+        """
+        need to set the range
+        """
+        return self.get_info(keyword)
+    
+class GeneExpressionSourceDatasets(Source):
+    """
+    Source: https://www.ncbi.nlm.nih.gov/gds/
+    
+    same problems
+    """
+    def __init__(self):
+        self._cached_first_soup = None
+        
+    def get_uid(self, keyword: str) -> List[str]:
+        query_string = urlencode({'term': keyword})
+        query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=gds&%s' % query_string
+        response = requests.get(query_url)
+        bs = BeautifulSoup(response.content, features='html.parser')
+        count = bs.find('count').text
+        retnum_string = urlencode({'retmax':count})
+        query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=gds&%s&%s' % (query_string+'&'+retnum_string)
+        response = requests.get(query_url)
+        bs = BeautifulSoup(response.content, features='html.parser')
+        uid_t = bs.find_all('id')
+        if not uid_t:
+            return []
+        uid = []
+        for i in range(len(uid_t)):
+            uid.append(uid_t[i].text)
+        return uid
+        
+    def get_info(self, keyword: str) -> List[Result]:
+        uid = self.get_uid(keyword)
+        if not self.get_uid(keyword):
+            return []
+        results = []  
+        for i in range(len(uid)):
+            query_string = urlencode({'id':uid[i]})
+            url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=gds&%s' % query_string
+            r = requests.get(url)
+            bs = BeautifulSoup(r.content, features='html.parser')
+            title = bs.find_all('item')[2].text
+            new_url = 'https://www.ncbi.nlm.nih.gov/sites/GDSbrowser?acc='+bs.find_all('item')[0].text
+            summary = bs.find_all('item')[3].text
+            result = Result(
+                title,
+                new_url,
+                summary
+                )
+            results.append(result)
+        return results
+    
+    def count(self, keyword: str) -> int:
+        return len(self.get_uid(keyword))
+        
+    def search(self, keyword: str, rng: range) -> List[Result]:
+        return self.get_info(keyword)
 
 
 if __name__ == '__main__':
@@ -183,7 +394,8 @@ if __name__ == '__main__':
         'rcsb': RCSBSource,
         'uniprot': UniProtSource,
         'taxonomy': TaxonomySource,
-        'gene-expr': GeneExpressionSource
+        'gene-expr-pro': GeneExpressionSourceProfiles,
+        'gene-expr-dat': GeneExpressionSourceDatasets
     }
 
     source_name = sys.argv[1]
