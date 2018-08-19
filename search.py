@@ -274,18 +274,17 @@ class GeneExpressionSourceProfiles(Source):
     Source: https://www.ncbi.nlm.nih.gov/geoprofiles/
     """
     def __init__(self):
-        self._cached_first_soup = None
+        pass
         
-    def get_uid(self, keyword: str) -> List[str]:
-        """
-        uid need being sorted 
-        """
+    def get_uid(self, keyword: str, end: int) -> List[str]:
         query_string = urlencode({'term': keyword})
         query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=geoprofiles&%s' % query_string
         response = requests.get(query_url)
         bs = BeautifulSoup(response.content, features='html.parser')
         count = bs.find('count').text
-        retnum_string = urlencode({'retmax':count})
+        if end > int(count):
+            end = int(count)
+        retnum_string = urlencode({'retmax':str(end)})
         query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=geoprofiles&%s' % (query_string+'&'+retnum_string)
         response = requests.get(query_url)
         bs = BeautifulSoup(response.content, features='html.parser')
@@ -297,56 +296,75 @@ class GeneExpressionSourceProfiles(Source):
             uid.append(uid_t[i].text)
         return uid
         
-    def get_info(self, keyword: str) -> List[Result]:
-        """
-        too slow, need searching multiple information sametime, and we need to set the range
-        """
-        uid = self.get_uid(keyword)
-        if not self.get_uid(keyword):
+    def get_info(self, keyword: str, end: int) -> List[Result]:
+        uid = self.get_uid(keyword, end)
+        if not uid:
             return []
         results = []  
-        for i in range(len(uid)):
-            query_string = urlencode({'id':uid[i]})
+        uid_s = []
+        uid_string = ''
+        start = 0
+        while start < len(uid):
+            for i in range(10):
+                uid_string += uid[start]+','
+                start += 1
+                if start == len(uid):
+                    break
+            uid_string = uid_string[:-1]
+            uid_s.append(uid_string)
+            uid_string = ''
+            
+        for i in range(len(uid_s)):
+            query_string = urlencode({'id':uid_s[i]})
             url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=geoprofiles&%s' % query_string
             r = requests.get(url)
             bs = BeautifulSoup(r.content, features='html.parser')
-            title = bs.title.text
-            new_url = 'https://www.ncbi.nlm.nih.gov/geoprofiles/'+uid[i]
-            summary = bs.nucdesc.text
-            result = Result(
-                title,
-                new_url,
-                summary
-                )
-            results.append(result)
+            docsum = bs.find_all('documentsummary')
+            for j in range(10):
+                if j == len(docsum):
+                    break
+                title = docsum[j].title
+                new_url = 'https://www.ncbi.nlm.nih.gov/geoprofiles/'+docsum[j]['uid']
+                summary = docsum[j].nucdesc
+                if not (title and summary):#some search results don't have any information, only uids
+                    continue
+                result = Result(
+                    title.text,
+                    new_url,
+                    summary.text
+                    )
+                results.append(result)
         return results
     
     def count(self, keyword: str) -> int:
-        return len(self.get_uid(keyword))
-        
-    def search(self, keyword: str, rng: range) -> List[Result]:
-        """
-        need to set the range
-        """
-        return self.get_info(keyword)
-    
-class GeneExpressionSourceDatasets(Source):
-    """
-    Source: https://www.ncbi.nlm.nih.gov/gds/
-    
-    same problems
-    """
-    def __init__(self):
-        self._cached_first_soup = None
-        
-    def get_uid(self, keyword: str) -> List[str]:
         query_string = urlencode({'term': keyword})
         query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=gds&%s' % query_string
         response = requests.get(query_url)
         bs = BeautifulSoup(response.content, features='html.parser')
         count = bs.find('count').text
-        retnum_string = urlencode({'retmax':count})
-        query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=gds&%s&%s' % (query_string+'&'+retnum_string)
+        return int(count)
+    
+    def search(self, keyword: str, rng: range) -> List[Result]:
+        end = rng.stop
+        return self.get_info(keyword, end)
+    
+class GeneExpressionSourceDatasets(Source):
+    """
+    Source: https://www.ncbi.nlm.nih.gov/gds/
+    """
+    def __init__(self):
+        pass
+        
+    def get_uid(self, keyword: str, end: int) -> List[str]:
+        query_string = urlencode({'term': keyword})
+        query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=gds&%s' % query_string
+        response = requests.get(query_url)
+        bs = BeautifulSoup(response.content, features='html.parser')
+        count = bs.find('count').text
+        if end > int(count):
+            end = int(count)
+        retnum_string = urlencode({'retmax':str(end)})
+        query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=gds&%s' % (query_string+'&'+retnum_string)
         response = requests.get(query_url)
         bs = BeautifulSoup(response.content, features='html.parser')
         uid_t = bs.find_all('id')
@@ -357,32 +375,55 @@ class GeneExpressionSourceDatasets(Source):
             uid.append(uid_t[i].text)
         return uid
         
-    def get_info(self, keyword: str) -> List[Result]:
-        uid = self.get_uid(keyword)
-        if not self.get_uid(keyword):
+    def get_info(self, keyword: str, end: int) -> List[Result]:
+        uid = self.get_uid(keyword, end)
+        if not uid:
             return []
         results = []  
-        for i in range(len(uid)):
-            query_string = urlencode({'id':uid[i]})
+        uid_s = []
+        uid_string = ''
+        start = 0
+        while start < len(uid):
+            for i in range(10):
+                uid_string += uid[start]+','
+                start += 1
+                if start == len(uid):
+                    break
+            uid_string = uid_string[:-1]
+            uid_s.append(uid_string)
+            uid_string = ''
+            
+        for i in range(len(uid_s)):
+            query_string = urlencode({'id':uid_s[i]})
             url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=gds&%s' % query_string
             r = requests.get(url)
             bs = BeautifulSoup(r.content, features='html.parser')
-            title = bs.find_all('item')[2].text
-            new_url = 'https://www.ncbi.nlm.nih.gov/sites/GDSbrowser?acc='+bs.find_all('item')[0].text
-            summary = bs.find_all('item')[3].text
-            result = Result(
-                title,
-                new_url,
-                summary
-                )
-            results.append(result)
+            docsum = bs.find_all('docsum')
+            for j in range(10):
+                if j == len(docsum):
+                    break
+                title = docsum[j].find('item',attrs={'name':'title'}).text
+                new_url = 'https://www.ncbi.nlm.nih.gov/query/acc.cgi?acc='+docsum[j].find('item',attrs={'name':'Accession'}).text
+                summary = docsum[j].find('item',attrs={'name':'summary'}).text
+                result = Result(
+                    title,
+                    new_url,
+                    summary
+                    )
+                results.append(result)
         return results
     
     def count(self, keyword: str) -> int:
-        return len(self.get_uid(keyword))
+        query_string = urlencode({'term': keyword})
+        query_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=geoprofiles&%s' % query_string
+        response = requests.get(query_url)
+        bs = BeautifulSoup(response.content, features='html.parser')
+        count = bs.find('count').text
+        return int(count)
         
     def search(self, keyword: str, rng: range) -> List[Result]:
-        return self.get_info(keyword)
+        end = rng.stop
+        return self.get_info(keyword, end)
 
 
 if __name__ == '__main__':
